@@ -391,6 +391,47 @@ fn journal_event_and_batch_update_queue_and_stats() {
 }
 
 #[test]
+fn journal_event_accepts_flag_style_session_and_event() {
+    let tmp = TempDir::new().unwrap();
+    let session = tmp.child("session");
+    write_session(session.path(), vec![queue_item("mid-1", 0)]);
+
+    bin()
+        .args([
+            "email",
+            "journal",
+            "event",
+            "--session",
+            session.path().to_str().unwrap(),
+            "--event",
+            "queue_build_started",
+            "--data",
+            r#"{"query":"in:inbox"}"#,
+        ])
+        .assert()
+        .success();
+
+    assert!(
+        fs::read_to_string(session.path().join("events.jsonl"))
+            .unwrap()
+            .contains("queue_build_started")
+    );
+}
+
+#[test]
+fn queue_build_without_metadata_explains_it_does_not_query_gmail() {
+    let tmp = TempDir::new().unwrap();
+    let session = tmp.child("session");
+    write_session(session.path(), vec![]);
+
+    bin()
+        .args(["email", "queue", "build", session.path().to_str().unwrap()])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("query Gmail"));
+}
+
+#[test]
 fn completions_zsh_emits_function() {
     bin()
         .args(["completions", "zsh"])

@@ -140,8 +140,14 @@ enum QueueCommands {
 #[allow(clippy::large_enum_variant)]
 enum JournalCommands {
     Event {
-        session_dir: PathBuf,
-        event: String,
+        #[arg(value_name = "SESSION_DIR", required_unless_present = "session")]
+        session_dir: Option<PathBuf>,
+        #[arg(value_name = "EVENT", required_unless_present = "event_name")]
+        event: Option<String>,
+        #[arg(long = "session", value_name = "SESSION_DIR")]
+        session: Option<PathBuf>,
+        #[arg(long = "event", value_name = "EVENT")]
+        event_name: Option<String>,
         #[arg(long)]
         message_id: Option<String>,
         #[arg(long, default_value = "", allow_hyphen_values = true)]
@@ -378,6 +384,8 @@ async fn run(cli: Cli) -> Result<()> {
                 JournalCommands::Event {
                     session_dir,
                     event,
+                    session,
+                    event_name,
                     message_id,
                     data,
                     increments,
@@ -390,8 +398,8 @@ async fn run(cli: Cli) -> Result<()> {
                     set_dashboard_anchor,
                     timezone,
                 } => journal_event(JournalEventArgs {
-                    session_dir,
-                    event,
+                    session_dir: choose_session_dir(session_dir, session)?,
+                    event: choose_event(event, event_name)?,
                     message_id,
                     data,
                     increments,
@@ -454,6 +462,26 @@ struct JournalEventArgs {
     set_terminal_action: String,
     set_dashboard_anchor: String,
     timezone: String,
+}
+
+fn choose_session_dir(positional: Option<PathBuf>, flag: Option<PathBuf>) -> Result<PathBuf> {
+    match (positional, flag) {
+        (Some(positional), Some(flag)) if positional != flag => {
+            bail!("provide the session directory either positionally or with --session, not both")
+        }
+        (Some(path), _) | (_, Some(path)) => Ok(path),
+        (None, None) => bail!("missing session directory"),
+    }
+}
+
+fn choose_event(positional: Option<String>, flag: Option<String>) -> Result<String> {
+    match (positional, flag) {
+        (Some(positional), Some(flag)) if positional != flag => {
+            bail!("provide the event either positionally or with --event, not both")
+        }
+        (Some(event), _) | (_, Some(event)) => Ok(event),
+        (None, None) => bail!("missing event"),
+    }
 }
 
 fn session_init(
@@ -572,7 +600,9 @@ fn queue_build(
         normalize_queue_items(values)?
     } else {
         if item_args.is_empty() {
-            bail!("provide either --items-file or at least one --item");
+            bail!(
+                "provide either --items-file or at least one --item; queue build does not query Gmail, so collect inbox metadata first"
+            );
         }
         normalize_queue_items(
             item_args
