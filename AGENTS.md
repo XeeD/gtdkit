@@ -33,14 +33,14 @@ domain transforms, and write session files safely.
 Use the managed Rust toolchain:
 
 ```sh
-mise exec rust@1.95.0 -- cargo fmt --check
-mise exec rust@1.95.0 -- cargo clippy --all-targets --all-features -- -D warnings
-mise exec rust@1.95.0 -- cargo test
+mise exec -- cargo fmt --check
+mise exec -- cargo clippy --all-targets --all-features -- -D warnings
+mise exec -- cargo test
 ```
 
 For local install checks:
 
 ```sh
-mise exec rust@1.95.0 -- cargo install --path . --locked --force
+mise exec -- cargo install --path . --locked --force
 gtdkit --version
 ```
