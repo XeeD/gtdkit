@@ -1,7 +1,12 @@
-use std::{collections::BTreeMap, fs, path::Path};
+use std::{
+    collections::BTreeMap,
+    fs,
+    path::{Path, PathBuf},
+};
 
 use assert_cmd::Command;
 use assert_fs::{TempDir, prelude::*};
+use chrono::{Datelike, Duration, Local, Timelike};
 use predicates::prelude::*;
 use pretty_assertions::assert_eq;
 use serde_json::{Value, json};
@@ -89,8 +94,57 @@ fn write_session(dir: &Path, items: Vec<Value>) {
     fs::write(dir.join("checkpoint.md"), "").unwrap();
 }
 
+fn session_path(root: &Path, session_id: &str) -> PathBuf {
+    root.join(&session_id[6..10])
+        .join(&session_id[10..12])
+        .join(&session_id[12..14])
+        .join(session_id)
+}
+
+fn write_session_for_id(root: &Path, session_id: &str, items: Vec<Value>) -> PathBuf {
+    let dir = session_path(root, session_id);
+    write_session(&dir, items);
+    fs::write(
+        dir.join("manifest.json"),
+        serde_json::to_string_pretty(&json!({
+            "schema_version": 1,
+            "created_at": "2026-04-27T10:00:00-05:00",
+            "account": "",
+            "gmail_query": "in:inbox",
+            "ordering": "newest_to_oldest",
+            "session_dir": dir.display().to_string(),
+            "newsletter_whitelist": root.join("config/newsletter-whitelist.json").display().to_string(),
+            "knowledge_base_config": root.join("config/knowledge-base.json").display().to_string(),
+            "long_term_memory": root.join("memory/long-term.md").display().to_string(),
+            "contract": {}
+        }))
+        .unwrap()
+            + "\n",
+    )
+    .unwrap();
+    dir
+}
+
 fn read_json(path: &Path) -> Value {
     serde_json::from_str(&fs::read_to_string(path).unwrap()).unwrap()
+}
+
+fn local_session_id(offset_minutes: i64) -> String {
+    let now = Local::now() + Duration::minutes(offset_minutes);
+    format!(
+        "email-{:04}{:02}{:02}-{:02}{:02}",
+        now.year(),
+        now.month(),
+        now.day(),
+        now.hour(),
+        now.minute()
+    )
+}
+
+fn different_local_session_id_same_day() -> String {
+    let now = Local::now();
+    let offset = if now.minute() == 59 { -1 } else { 1 };
+    local_session_id(offset)
 }
 
 #[test]
@@ -103,8 +157,6 @@ fn init_session_creates_restartable_files() {
             "init",
             "--root",
             tmp.path().to_str().unwrap(),
-            "--session-id",
-            "session-test",
             "--account",
             "user@example.com",
         ])
@@ -113,7 +165,9 @@ fn init_session_creates_restartable_files() {
         .get_output()
         .stdout
         .clone();
-    let session_dir = Path::new(std::str::from_utf8(&output).unwrap().trim());
+    let session_id = std::str::from_utf8(&output).unwrap().trim();
+    assert!(session_id.starts_with("email-"));
+    let session_dir = session_path(tmp.path(), session_id);
     for name in [
         "manifest.json",
         "queue.json",
@@ -136,10 +190,52 @@ fn init_session_creates_restartable_files() {
 }
 
 #[test]
+fn init_refuses_second_active_session_for_current_local_date() {
+    let tmp = TempDir::new().unwrap();
+    bin()
+        .args([
+            "email",
+            "session",
+            "init",
+            "--root",
+            tmp.path().to_str().unwrap(),
+        ])
+        .assert()
+        .success();
+
+    let second_id = different_local_session_id_same_day();
+    bin()
+        .args([
+            "email",
+            "session",
+            "init",
+            &second_id,
+            "--root",
+            tmp.path().to_str().unwrap(),
+        ])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("Active session exists"));
+
+    bin()
+        .args([
+            "email",
+            "session",
+            "init",
+            &second_id,
+            "--root",
+            tmp.path().to_str().unwrap(),
+            "--allow-active-session",
+        ])
+        .assert()
+        .success();
+}
+
+#[test]
 fn queue_build_appends_replaces_and_rejects_duplicates_without_mutation() {
     let tmp = TempDir::new().unwrap();
-    let session = tmp.child("session");
-    write_session(session.path(), vec![queue_item("mid-1", 0)]);
+    let session_id = "email-20260427-1000";
+    let session = write_session_for_id(tmp.path(), session_id, vec![queue_item("mid-1", 0)]);
 
     let item = json!({
         "message_id": "mid-2",
@@ -153,13 +249,15 @@ fn queue_build_appends_replaces_and_rejects_duplicates_without_mutation() {
             "email",
             "queue",
             "build",
-            session.path().to_str().unwrap(),
+            session_id,
+            "--root",
+            tmp.path().to_str().unwrap(),
             "--item",
             &item.to_string(),
         ])
         .assert()
         .success();
-    let queue = read_json(&session.path().join("queue.json"));
+    let queue = read_json(&session.join("queue.json"));
     assert_eq!(queue["items"][1]["message_id"], "mid-2");
     assert_eq!(queue["items"][1]["index"], 1);
     assert_eq!(queue["items"][1]["status"], "pending");
@@ -169,7 +267,9 @@ fn queue_build_appends_replaces_and_rejects_duplicates_without_mutation() {
             "email",
             "queue",
             "build",
-            session.path().to_str().unwrap(),
+            session_id,
+            "--root",
+            tmp.path().to_str().unwrap(),
             "--item",
             &item.to_string(),
             "--item",
@@ -179,7 +279,7 @@ fn queue_build_appends_replaces_and_rejects_duplicates_without_mutation() {
         .failure()
         .stderr(predicate::str::contains("message ID already exists"));
     assert_eq!(
-        read_json(&session.path().join("queue.json"))["items"]
+        read_json(&session.join("queue.json"))["items"]
             .as_array()
             .unwrap()
             .len(),
@@ -198,14 +298,16 @@ fn queue_build_appends_replaces_and_rejects_duplicates_without_mutation() {
             "email",
             "queue",
             "build",
-            session.path().to_str().unwrap(),
+            session_id,
+            "--root",
+            tmp.path().to_str().unwrap(),
             "--replace",
             "--item",
             &replacement.to_string(),
         ])
         .assert()
         .success();
-    let queue = read_json(&session.path().join("queue.json"));
+    let queue = read_json(&session.join("queue.json"));
     assert_eq!(queue["current_pointer"], 0);
     assert_eq!(queue["items"][0]["message_id"], "mid-9");
     assert_eq!(queue["items"][0]["index"], 0);
@@ -214,8 +316,8 @@ fn queue_build_appends_replaces_and_rejects_duplicates_without_mutation() {
 #[test]
 fn queue_update_validates_before_mutation() {
     let tmp = TempDir::new().unwrap();
-    let session = tmp.child("session");
-    write_session(session.path(), vec![queue_item("mid-1", 0)]);
+    let session_id = "email-20260427-1000";
+    let session = write_session_for_id(tmp.path(), session_id, vec![queue_item("mid-1", 0)]);
     let bad = tmp.child("bad-updates.json");
     bad.write_str(
         &json!({"updates": [{"message_id": "mid-1", "fields": {"status": "deleted", "bogus": true}}]}).to_string(),
@@ -227,7 +329,9 @@ fn queue_update_validates_before_mutation() {
             "email",
             "queue",
             "update",
-            session.path().to_str().unwrap(),
+            session_id,
+            "--root",
+            tmp.path().to_str().unwrap(),
             "--update-file",
             bad.path().to_str().unwrap(),
         ])
@@ -235,7 +339,7 @@ fn queue_update_validates_before_mutation() {
         .failure()
         .stderr(predicate::str::contains("unsupported fields"));
     assert_eq!(
-        read_json(&session.path().join("queue.json"))["items"][0]["status"],
+        read_json(&session.join("queue.json"))["items"][0]["status"],
         "pending"
     );
 }
@@ -243,9 +347,10 @@ fn queue_update_validates_before_mutation() {
 #[test]
 fn queue_view_json_filters_pending() {
     let tmp = TempDir::new().unwrap();
-    let session = tmp.child("session");
-    write_session(
-        session.path(),
+    let session_id = "email-20260427-1000";
+    write_session_for_id(
+        tmp.path(),
+        session_id,
         vec![queue_item("mid-1", 0), {
             let mut item = queue_item("mid-2", 1);
             item["status"] = json!("deleted");
@@ -257,7 +362,9 @@ fn queue_view_json_filters_pending() {
             "email",
             "queue",
             "view",
-            session.path().to_str().unwrap(),
+            session_id,
+            "--root",
+            tmp.path().to_str().unwrap(),
             "--status",
             "pending",
             "--json",
@@ -275,14 +382,16 @@ fn queue_view_json_filters_pending() {
 #[test]
 fn session_apply_updates_all_files() {
     let tmp = TempDir::new().unwrap();
-    let session = tmp.child("session");
-    write_session(session.path(), vec![queue_item("mid-1", 0)]);
+    let session_id = "email-20260427-1000";
+    let session = write_session_for_id(tmp.path(), session_id, vec![queue_item("mid-1", 0)]);
     bin()
         .args([
             "email",
             "session",
             "apply",
-            session.path().to_str().unwrap(),
+            session_id,
+            "--root",
+            tmp.path().to_str().unwrap(),
             "--event",
             r#"{"event":"dashboard_rendered","message_id":"mid-1","data":{"anchor":"email-0001"}}"#,
             "--queue-update",
@@ -299,30 +408,30 @@ fn session_apply_updates_all_files() {
         .assert()
         .success();
     assert!(
-        fs::read_to_string(session.path().join("events.jsonl"))
+        fs::read_to_string(session.join("events.jsonl"))
             .unwrap()
             .contains("dashboard_rendered")
     );
     assert!(
-        fs::read_to_string(session.path().join("context.md"))
+        fs::read_to_string(session.join("context.md"))
             .unwrap()
             .contains("- context line")
     );
     assert!(
-        fs::read_to_string(session.path().join("dashboards.md"))
+        fs::read_to_string(session.join("dashboards.md"))
             .unwrap()
             .contains("email-0001")
     );
     assert_eq!(
-        fs::read_to_string(session.path().join("checkpoint.md")).unwrap(),
+        fs::read_to_string(session.join("checkpoint.md")).unwrap(),
         "# Checkpoint\nwaiting"
     );
     assert_eq!(
-        read_json(&session.path().join("stats.json"))["gmail_threads_read"],
+        read_json(&session.join("stats.json"))["gmail_threads_read"],
         1
     );
     assert_eq!(
-        read_json(&session.path().join("queue.json"))["items"][0]["dashboard_anchor"],
+        read_json(&session.join("queue.json"))["items"][0]["dashboard_anchor"],
         "email-0001"
     );
 }
@@ -330,16 +439,18 @@ fn session_apply_updates_all_files() {
 #[test]
 fn journal_event_and_batch_update_queue_and_stats() {
     let tmp = TempDir::new().unwrap();
-    let session = tmp.child("session");
-    write_session(session.path(), vec![queue_item("mid-1", 0)]);
+    let session_id = "email-20260427-1000";
+    let session = write_session_for_id(tmp.path(), session_id, vec![queue_item("mid-1", 0)]);
 
     bin()
         .args([
             "email",
             "journal",
             "event",
-            session.path().to_str().unwrap(),
+            session_id,
             "gmail_marked_read",
+            "--root",
+            tmp.path().to_str().unwrap(),
             "--message-id",
             "mid-1",
             "--data",
@@ -352,13 +463,10 @@ fn journal_event_and_batch_update_queue_and_stats() {
         .assert()
         .success();
     assert_eq!(
-        read_json(&session.path().join("queue.json"))["items"][0]["read_state"],
+        read_json(&session.join("queue.json"))["items"][0]["read_state"],
         "marked_read"
     );
-    assert_eq!(
-        read_json(&session.path().join("stats.json"))["marked_read"],
-        1
-    );
+    assert_eq!(read_json(&session.join("stats.json"))["marked_read"], 1);
 
     let batch = tmp.child("journal-batch.json");
     batch
@@ -375,34 +483,37 @@ fn journal_event_and_batch_update_queue_and_stats() {
             "email",
             "journal",
             "batch",
-            session.path().to_str().unwrap(),
+            session_id,
+            "--root",
+            tmp.path().to_str().unwrap(),
             "--batch-file",
             batch.path().to_str().unwrap(),
         ])
         .assert()
         .success();
-    let item = &read_json(&session.path().join("queue.json"))["items"][0];
+    let item = &read_json(&session.join("queue.json"))["items"][0];
     assert_eq!(item["status"], "in_progress");
     assert_eq!(item["research_state"], "complete");
     assert_eq!(
-        read_json(&session.path().join("stats.json"))["gmail_threads_read"],
+        read_json(&session.join("stats.json"))["gmail_threads_read"],
         1
     );
 }
 
 #[test]
-fn journal_event_accepts_flag_style_session_and_event() {
+fn journal_event_accepts_event_flag() {
     let tmp = TempDir::new().unwrap();
-    let session = tmp.child("session");
-    write_session(session.path(), vec![queue_item("mid-1", 0)]);
+    let session_id = "email-20260427-1000";
+    let session = write_session_for_id(tmp.path(), session_id, vec![queue_item("mid-1", 0)]);
 
     bin()
         .args([
             "email",
             "journal",
             "event",
-            "--session",
-            session.path().to_str().unwrap(),
+            session_id,
+            "--root",
+            tmp.path().to_str().unwrap(),
             "--event",
             "queue_build_started",
             "--data",
@@ -412,7 +523,7 @@ fn journal_event_accepts_flag_style_session_and_event() {
         .success();
 
     assert!(
-        fs::read_to_string(session.path().join("events.jsonl"))
+        fs::read_to_string(session.join("events.jsonl"))
             .unwrap()
             .contains("queue_build_started")
     );
@@ -421,11 +532,18 @@ fn journal_event_accepts_flag_style_session_and_event() {
 #[test]
 fn queue_build_without_metadata_explains_it_does_not_query_gmail() {
     let tmp = TempDir::new().unwrap();
-    let session = tmp.child("session");
-    write_session(session.path(), vec![]);
+    let session_id = "email-20260427-1000";
+    write_session_for_id(tmp.path(), session_id, vec![]);
 
     bin()
-        .args(["email", "queue", "build", session.path().to_str().unwrap()])
+        .args([
+            "email",
+            "queue",
+            "build",
+            session_id,
+            "--root",
+            tmp.path().to_str().unwrap(),
+        ])
         .assert()
         .failure()
         .stderr(predicate::str::contains("query Gmail"));

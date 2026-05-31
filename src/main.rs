@@ -7,7 +7,7 @@ use std::{
 
 use anstream::{eprintln, println};
 use camino::Utf8PathBuf;
-use chrono::{DateTime, Datelike, FixedOffset, Local, SecondsFormat};
+use chrono::{DateTime, Datelike, FixedOffset, Local, SecondsFormat, Timelike};
 use clap::{CommandFactory, Parser, Subcommand, ValueEnum};
 use comfy_table::{Table, presets::NOTHING};
 use fs4::fs_std::FileExt;
@@ -17,7 +17,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use tempfile::NamedTempFile;
 
-const DEFAULT_ROOT: &str = "/Users/xeed/Documents/SOPs/email-inbox-processing";
+const DEFAULT_ROOT: &str =
+    "/Users/xeed/Library/Mobile Documents/com~apple~CloudDocs/SOPs/email-inbox-processing";
 const DEFAULT_GMAIL_QUERY: &str = "in:inbox";
 const DEFAULT_TZ: &str = "America/Chicago";
 const QUEUE_FIELDS: &[&str] = &[
@@ -73,6 +74,8 @@ enum EmailCommands {
 #[derive(Debug, Subcommand)]
 enum SessionCommands {
     Init {
+        #[arg(value_name = "SESSION_ID")]
+        session_id: Option<String>,
         #[arg(long, default_value = DEFAULT_ROOT)]
         root: PathBuf,
         #[arg(long, default_value = DEFAULT_GMAIL_QUERY)]
@@ -81,11 +84,13 @@ enum SessionCommands {
         account: String,
         #[arg(long, default_value = DEFAULT_TZ)]
         timezone: String,
-        #[arg(long, default_value = "")]
-        session_id: String,
+        #[arg(long)]
+        allow_active_session: bool,
     },
     Apply {
-        session_dir: PathBuf,
+        session_id: String,
+        #[arg(long, default_value = DEFAULT_ROOT)]
+        root: PathBuf,
         #[arg(long)]
         batch_file: Option<PathBuf>,
         #[arg(long = "event")]
@@ -108,7 +113,9 @@ enum SessionCommands {
 #[derive(Debug, Subcommand)]
 enum QueueCommands {
     Build {
-        session_dir: PathBuf,
+        session_id: String,
+        #[arg(long, default_value = DEFAULT_ROOT)]
+        root: PathBuf,
         #[arg(long)]
         items_file: Option<PathBuf>,
         #[arg(long = "item")]
@@ -119,7 +126,9 @@ enum QueueCommands {
         timezone: String,
     },
     View {
-        session_dir: PathBuf,
+        session_id: String,
+        #[arg(long, default_value = DEFAULT_ROOT)]
+        root: PathBuf,
         #[arg(long)]
         status: Option<String>,
         #[arg(long, default_value_t = 10)]
@@ -128,7 +137,9 @@ enum QueueCommands {
         json: bool,
     },
     Update {
-        session_dir: PathBuf,
+        session_id: String,
+        #[arg(long, default_value = DEFAULT_ROOT)]
+        root: PathBuf,
         #[arg(long)]
         update_file: PathBuf,
         #[arg(long, default_value = DEFAULT_TZ)]
@@ -140,12 +151,12 @@ enum QueueCommands {
 #[allow(clippy::large_enum_variant)]
 enum JournalCommands {
     Event {
-        #[arg(value_name = "SESSION_DIR", required_unless_present = "session")]
-        session_dir: Option<PathBuf>,
+        #[arg(value_name = "SESSION_ID")]
+        session_id: String,
         #[arg(value_name = "EVENT", required_unless_present = "event_name")]
         event: Option<String>,
-        #[arg(long = "session", value_name = "SESSION_DIR")]
-        session: Option<PathBuf>,
+        #[arg(long, default_value = DEFAULT_ROOT)]
+        root: PathBuf,
         #[arg(long = "event", value_name = "EVENT")]
         event_name: Option<String>,
         #[arg(long)]
@@ -172,7 +183,9 @@ enum JournalCommands {
         timezone: String,
     },
     Batch {
-        session_dir: PathBuf,
+        session_id: String,
+        #[arg(long, default_value = DEFAULT_ROOT)]
+        root: PathBuf,
         #[arg(long)]
         batch_file: PathBuf,
         #[arg(long, default_value = DEFAULT_TZ)]
@@ -326,14 +339,23 @@ async fn run(cli: Cli) -> Result<()> {
         Commands::Email { command } => match command {
             EmailCommands::Session { command } => match command {
                 SessionCommands::Init {
+                    session_id,
+                    root,
+                    gmail_query,
+                    account,
+                    timezone,
+                    allow_active_session,
+                } => session_init(SessionInitArgs {
                     root,
                     gmail_query,
                     account,
                     timezone,
                     session_id,
-                } => session_init(&root, &gmail_query, &account, &timezone, &session_id),
+                    allow_active_session,
+                }),
                 SessionCommands::Apply {
-                    session_dir,
+                    session_id,
+                    root,
                     batch_file,
                     events,
                     queue_updates,
@@ -343,7 +365,8 @@ async fn run(cli: Cli) -> Result<()> {
                     checkpoint_write,
                     timezone,
                 } => session_apply(SessionApplyArgs {
-                    session_dir,
+                    session_id,
+                    root,
                     batch_file,
                     events,
                     queue_updates,
@@ -356,35 +379,39 @@ async fn run(cli: Cli) -> Result<()> {
             },
             EmailCommands::Queue { command } => match command {
                 QueueCommands::Build {
-                    session_dir,
+                    session_id,
+                    root,
                     items_file,
                     items,
                     replace,
                     timezone,
                 } => queue_build(
-                    &session_dir,
+                    &session_id,
+                    &root,
                     items_file.as_deref(),
                     &items,
                     replace,
                     &timezone,
                 ),
                 QueueCommands::View {
-                    session_dir,
+                    session_id,
+                    root,
                     status,
                     limit,
                     json,
-                } => queue_view(&session_dir, status.as_deref(), limit, json),
+                } => queue_view(&session_id, &root, status.as_deref(), limit, json),
                 QueueCommands::Update {
-                    session_dir,
+                    session_id,
+                    root,
                     update_file,
                     timezone,
-                } => queue_update(&session_dir, &update_file, &timezone),
+                } => queue_update(&session_id, &root, &update_file, &timezone),
             },
             EmailCommands::Journal { command } => match command {
                 JournalCommands::Event {
-                    session_dir,
+                    session_id,
                     event,
-                    session,
+                    root,
                     event_name,
                     message_id,
                     data,
@@ -398,7 +425,8 @@ async fn run(cli: Cli) -> Result<()> {
                     set_dashboard_anchor,
                     timezone,
                 } => journal_event(JournalEventArgs {
-                    session_dir: choose_session_dir(session_dir, session)?,
+                    session_id,
+                    root,
                     event: choose_event(event, event_name)?,
                     message_id,
                     data,
@@ -413,10 +441,11 @@ async fn run(cli: Cli) -> Result<()> {
                     timezone,
                 }),
                 JournalCommands::Batch {
-                    session_dir,
+                    session_id,
+                    root,
                     batch_file,
                     timezone,
-                } => journal_batch(&session_dir, &batch_file, &timezone),
+                } => journal_batch(&session_id, &root, &batch_file, &timezone),
             },
         },
         Commands::Completions { shell } => {
@@ -436,8 +465,18 @@ async fn run(cli: Cli) -> Result<()> {
     }
 }
 
+struct SessionInitArgs {
+    root: PathBuf,
+    gmail_query: String,
+    account: String,
+    timezone: String,
+    session_id: Option<String>,
+    allow_active_session: bool,
+}
+
 struct SessionApplyArgs {
-    session_dir: PathBuf,
+    session_id: String,
+    root: PathBuf,
     batch_file: Option<PathBuf>,
     events: Vec<String>,
     queue_updates: Vec<String>,
@@ -449,7 +488,8 @@ struct SessionApplyArgs {
 }
 
 struct JournalEventArgs {
-    session_dir: PathBuf,
+    session_id: String,
+    root: PathBuf,
     event: String,
     message_id: Option<String>,
     data: String,
@@ -464,16 +504,6 @@ struct JournalEventArgs {
     timezone: String,
 }
 
-fn choose_session_dir(positional: Option<PathBuf>, flag: Option<PathBuf>) -> Result<PathBuf> {
-    match (positional, flag) {
-        (Some(positional), Some(flag)) if positional != flag => {
-            bail!("provide the session directory either positionally or with --session, not both")
-        }
-        (Some(path), _) | (_, Some(path)) => Ok(path),
-        (None, None) => bail!("missing session directory"),
-    }
-}
-
 fn choose_event(positional: Option<String>, flag: Option<String>) -> Result<String> {
     match (positional, flag) {
         (Some(positional), Some(flag)) if positional != flag => {
@@ -484,26 +514,52 @@ fn choose_event(positional: Option<String>, flag: Option<String>) -> Result<Stri
     }
 }
 
-fn session_init(
-    root: &Path,
-    gmail_query: &str,
-    account: &str,
-    timezone: &str,
-    session_id: &str,
-) -> Result<()> {
-    let root = expand_path(root)?;
-    let now = now(timezone)?;
-    let session_id = if session_id.is_empty() {
-        format!("session-{}", now.format("%Y%m%d-%H%M%S"))
-    } else {
-        session_id.to_owned()
+fn session_init(args: SessionInitArgs) -> Result<()> {
+    let root = expand_path(&args.root)?;
+    let now = now(&args.timezone)?;
+    let session_id = match args.session_id {
+        Some(id) => validate_session_id(&id)?,
+        None => format!(
+            "email-{:04}{:02}{:02}-{:02}{:02}",
+            now.year(),
+            now.month(),
+            now.day(),
+            now.hour(),
+            now.minute()
+        ),
     };
+    let (id_year, id_month, id_day) =
+        parse_session_id_date(&session_id).ok_or_else(|| miette!("invalid session ID"))?;
+    if id_year != format!("{:04}", now.year())
+        || id_month != format!("{:02}", now.month())
+        || id_day != format!("{:02}", now.day())
+    {
+        bail!("session ID date must match the current local date");
+    }
     let session_dir = root
         .join(format!("{:04}", now.year()))
         .join(format!("{:02}", now.month()))
         .join(format!("{:02}", now.day()))
-        .join(session_id);
-    std::fs::create_dir_all(&session_dir).into_diagnostic()?;
+        .join(&session_id);
+    if session_dir.exists() {
+        bail!(
+            "Session directory already exists: {}",
+            session_dir.display()
+        );
+    }
+    if !args.allow_active_session
+        && let Some(active) = find_active_session_for_date(&root, &now)?
+    {
+        bail!(
+            "Active session exists: {} ({})\nResume or close it before starting a new default session, or pass --allow-active-session to intentionally create another session.",
+            active.session_id,
+            active.path.display()
+        );
+    }
+    std::fs::create_dir_all(session_dir.parent().unwrap()).into_diagnostic()?;
+    std::fs::create_dir(&session_dir)
+        .into_diagnostic()
+        .map_err(|err| err.wrap_err(format!("failed to create {}", session_dir.display())))?;
     let config_dir = root.join("config");
     let memory_dir = root.join("memory");
     std::fs::create_dir_all(&config_dir).into_diagnostic()?;
@@ -519,8 +575,8 @@ fn session_init(
     let manifest = Manifest {
         schema_version: 1,
         created_at: iso(&now),
-        account: account.into(),
-        gmail_query: gmail_query.into(),
+        account: args.account,
+        gmail_query: args.gmail_query.clone(),
         ordering: "newest_to_oldest".into(),
         session_dir: session_dir.display().to_string(),
         newsletter_whitelist: whitelist_path.display().to_string(),
@@ -538,7 +594,7 @@ fn session_init(
     let queue = Queue {
         schema_version: 1,
         created_at: iso(&now),
-        gmail_query: gmail_query.into(),
+        gmail_query: args.gmail_query.clone(),
         ordering: "newest_to_oldest".into(),
         current_pointer: 0,
         items: vec![],
@@ -551,7 +607,7 @@ fn session_init(
         "ts": iso(&now),
         "event": "session_initialized",
         "message_id": null,
-        "data": {"session_dir": session_dir.display().to_string(), "gmail_query": gmail_query}
+        "data": {"session_dir": session_dir.display().to_string(), "session_id": session_id, "gmail_query": args.gmail_query}
     });
     write_text(
         &session_dir.join("events.jsonl"),
@@ -568,16 +624,150 @@ fn session_init(
     write_text(
         &session_dir.join("checkpoint.md"),
         &format!(
-            "# Checkpoint\n\nSession: `{}`\n\nNext step: populate `queue.json` from Gmail query `in:inbox`, newest to oldest, then process the first pending item.\n",
+            "# Checkpoint\n\nSession ID: `{}`\n\nSession: `{}`\n\nNext step: populate `queue.json` from Gmail query `in:inbox`, newest to oldest, then process the first pending item.\n",
+            session_id,
             session_dir.display()
         ),
     )?;
-    println!("{}", session_dir.display());
+    println!("{session_id}");
     Ok(())
 }
 
+#[derive(Debug)]
+struct ActiveSession {
+    session_id: String,
+    path: PathBuf,
+}
+
+fn validate_session_id(id: &str) -> Result<String> {
+    if parse_session_id_date(id).is_none() {
+        bail!("session ID must match email-YYYYMMDD-HHMM");
+    }
+    Ok(id.to_owned())
+}
+
+fn parse_session_id_date(id: &str) -> Option<(String, String, String)> {
+    if id.len() != "email-YYYYMMDD-HHMM".len() {
+        return None;
+    }
+    let bytes = id.as_bytes();
+    if &bytes[0..6] != b"email-" || bytes[14] != b'-' {
+        return None;
+    }
+    if !bytes[6..14].iter().all(u8::is_ascii_digit) || !bytes[15..19].iter().all(u8::is_ascii_digit)
+    {
+        return None;
+    }
+    let month: u32 = id[10..12].parse().ok()?;
+    let day: u32 = id[12..14].parse().ok()?;
+    let hour: u32 = id[15..17].parse().ok()?;
+    let minute: u32 = id[17..19].parse().ok()?;
+    if !(1..=12).contains(&month) || !(1..=31).contains(&day) || hour > 23 || minute > 59 {
+        return None;
+    }
+    Some((
+        id[6..10].to_owned(),
+        id[10..12].to_owned(),
+        id[12..14].to_owned(),
+    ))
+}
+
+fn resolve_session(root: &Path, session_id: &str) -> Result<PathBuf> {
+    validate_session_id(session_id)?;
+    let (year, month, day) =
+        parse_session_id_date(session_id).ok_or_else(|| miette!("invalid session ID"))?;
+    let session_dir = expand_path(root)?
+        .join(year)
+        .join(month)
+        .join(day)
+        .join(session_id);
+    if !session_dir.exists() {
+        bail!(
+            "Session ID does not exist under root: {} ({})",
+            session_id,
+            session_dir.display()
+        );
+    }
+    Ok(session_dir)
+}
+
+fn find_active_session_for_date(
+    root: &Path,
+    now: &DateTime<FixedOffset>,
+) -> Result<Option<ActiveSession>> {
+    let day_dir = root
+        .join(format!("{:04}", now.year()))
+        .join(format!("{:02}", now.month()))
+        .join(format!("{:02}", now.day()));
+    if !day_dir.exists() {
+        return Ok(None);
+    }
+    let mut entries = std::fs::read_dir(&day_dir)
+        .into_diagnostic()
+        .map_err(|err| err.wrap_err(format!("failed to read {}", day_dir.display())))?
+        .collect::<std::io::Result<Vec<_>>>()
+        .into_diagnostic()?;
+    entries.sort_by_key(|entry| entry.file_name());
+
+    for entry in entries {
+        let path = entry.path();
+        if !path.is_dir() || !path.join("manifest.json").exists() {
+            continue;
+        }
+        if session_is_active(&path)? {
+            let session_id = path
+                .file_name()
+                .and_then(|name| name.to_str())
+                .unwrap_or("<unknown>")
+                .to_owned();
+            return Ok(Some(ActiveSession { session_id, path }));
+        }
+    }
+    Ok(None)
+}
+
+fn session_is_active(session_dir: &Path) -> Result<bool> {
+    if event_log_contains(session_dir, "session_completed")? {
+        return Ok(false);
+    }
+    let queue_path = session_dir.join("queue.json");
+    if !queue_path.exists() {
+        return Ok(true);
+    }
+    let queue: Queue = read_json(&queue_path)?;
+    if queue.items.is_empty() {
+        return Ok(true);
+    }
+    Ok(queue.items.iter().any(|item| {
+        matches!(
+            item.status.as_str(),
+            "pending" | "in_progress" | "waiting_for_user" | "blocked"
+        )
+    }))
+}
+
+fn event_log_contains(session_dir: &Path, event_name: &str) -> Result<bool> {
+    let events_path = session_dir.join("events.jsonl");
+    if !events_path.exists() {
+        return Ok(false);
+    }
+    let text = std::fs::read_to_string(&events_path)
+        .into_diagnostic()
+        .map_err(|err| err.wrap_err(format!("failed to read {}", events_path.display())))?;
+    for line in text.lines().filter(|line| !line.trim().is_empty()) {
+        let value: Value = serde_json::from_str(line)
+            .into_diagnostic()
+            .map_err(|err| err.wrap_err(format!("failed to parse {}", events_path.display())))?;
+        if value.get("event").and_then(Value::as_str) == Some(event_name) {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
 fn queue_build(
-    session_dir: &Path,
+    session_id: &str,
+    root: &Path,
     items_file: Option<&Path>,
     item_args: &[String],
     replace: bool,
@@ -615,7 +805,7 @@ fn queue_build(
         bail!("no queue items provided");
     }
 
-    let session_dir = require_session(session_dir)?;
+    let session_dir = resolve_session(root, session_id)?;
     let _lock = SessionLock::acquire(&session_dir)?;
     let queue_path = session_dir.join("queue.json");
     let mut queue: Queue = read_json(&queue_path)?;
@@ -644,12 +834,13 @@ fn queue_build(
 }
 
 fn queue_view(
-    session_dir: &Path,
+    session_id: &str,
+    root: &Path,
     status: Option<&str>,
     limit: usize,
     json_output: bool,
 ) -> Result<()> {
-    let session_dir = require_session(session_dir)?;
+    let session_dir = resolve_session(root, session_id)?;
     let _lock = SessionLock::acquire(&session_dir)?;
     let queue: Queue = read_json(&session_dir.join("queue.json"))?;
     let items: Vec<_> = queue
@@ -699,7 +890,7 @@ fn queue_view(
     Ok(())
 }
 
-fn queue_update(session_dir: &Path, update_file: &Path, timezone: &str) -> Result<()> {
+fn queue_update(session_id: &str, root: &Path, update_file: &Path, timezone: &str) -> Result<()> {
     let raw = read_json_value(&expand_path(update_file)?)?;
     let updates = match raw {
         Value::Array(_) => serde_json::from_value::<Vec<QueueUpdate>>(raw).into_diagnostic()?,
@@ -712,7 +903,7 @@ fn queue_update(session_dir: &Path, update_file: &Path, timezone: &str) -> Resul
     };
     validate_queue_updates(&updates, "update")?;
 
-    let session_dir = require_session(session_dir)?;
+    let session_dir = resolve_session(root, session_id)?;
     let _lock = SessionLock::acquire(&session_dir)?;
     let queue_path = session_dir.join("queue.json");
     let mut queue: Queue = read_json(&queue_path)?;
@@ -760,7 +951,7 @@ fn journal_event(args: JournalEventArgs) -> Result<()> {
         bail!("queue field updates require --message-id");
     }
 
-    let session_dir = require_session(&args.session_dir)?;
+    let session_dir = resolve_session(&args.root, &args.session_id)?;
     let _lock = SessionLock::acquire(&session_dir)?;
     let now = now(&args.timezone)?;
     if !queue_fields.is_empty() {
@@ -795,7 +986,7 @@ fn journal_event(args: JournalEventArgs) -> Result<()> {
     Ok(())
 }
 
-fn journal_batch(session_dir: &Path, batch_file: &Path, timezone: &str) -> Result<()> {
+fn journal_batch(session_id: &str, root: &Path, batch_file: &Path, timezone: &str) -> Result<()> {
     let raw = read_json_value(&expand_path(batch_file)?)?;
     let operations = match raw {
         Value::Array(_) => serde_json::from_value::<Vec<EventInput>>(raw).into_diagnostic()?,
@@ -808,7 +999,7 @@ fn journal_batch(session_dir: &Path, batch_file: &Path, timezone: &str) -> Resul
     };
     validate_events(&operations)?;
 
-    let session_dir = require_session(session_dir)?;
+    let session_dir = resolve_session(root, session_id)?;
     let _lock = SessionLock::acquire(&session_dir)?;
     let mut merged_updates: BTreeMap<String, BTreeMap<String, Value>> = BTreeMap::new();
     let mut increments = vec![];
@@ -894,7 +1085,7 @@ fn session_apply(args: SessionApplyArgs) -> Result<()> {
     validate_events(&batch.events)?;
     validate_queue_updates(&batch.queue_updates, "queue update")?;
 
-    let session_dir = require_session(&args.session_dir)?;
+    let session_dir = resolve_session(&args.root, &args.session_id)?;
     let _lock = SessionLock::acquire(&session_dir)?;
     let queue: Queue = read_json(&session_dir.join("queue.json"))?;
     let message_ids: BTreeSet<_> = queue
@@ -1191,14 +1382,6 @@ fn ensure_file_json(path: &Path, value: Value) -> Result<()> {
     Ok(())
 }
 
-fn require_session(path: &Path) -> Result<PathBuf> {
-    let path = expand_path(path)?;
-    if !path.exists() {
-        bail!("Session directory does not exist: {}", path.display());
-    }
-    Ok(path)
-}
-
 fn expand_path(path: &Path) -> Result<PathBuf> {
     let path = if let Some(raw) = path.to_str().filter(|raw| raw.starts_with("~/")) {
         let home = std::env::var("HOME").into_diagnostic()?;
@@ -1326,7 +1509,7 @@ Durable preferences and recurring context for the `email-inbox-processing` skill
 
 - Process Gmail inbox to zero, not just a sample.
 - Process newest to oldest.
-- Process exactly one email at a time.
+- Present exactly one dashboard and take at most one terminal action at a time.
 - Never skip an email; if blocked, mark it blocked or waiting with a reason.
 - Commit session state to durable files before and after each journaled step.
 - Ask before every external state change. Suggestions are allowed; automatic action is not.
@@ -1352,7 +1535,7 @@ Durable preferences and recurring context for the `email-inbox-processing` skill
 
 ## Newsletter Preferences
 
-- For newsletters not listed in `/Users/xeed/Documents/SOPs/email-inbox-processing/config/newsletter-whitelist.json`, recommend unsubscribe and delete.
+- For newsletters not listed in `/Users/xeed/Library/Mobile Documents/com~apple~CloudDocs/SOPs/email-inbox-processing/config/newsletter-whitelist.json`, recommend unsubscribe and delete.
 - If the user decides to keep a newsletter, add it to the newsletter whitelist after approval so future runs retain it.
 - After a successful unsubscribe, delete the email unless explicitly directed otherwise. Mark it read immediately before deleting it.
 - Use browser MCP for approved unsubscribe flows so logged-in state is available.
@@ -1375,4 +1558,139 @@ At the end of each inbox processing session, scan this file to avoid duplicates,
 fn _keep_plan_dependencies_visible() {
     let _ = std::mem::size_of::<Utf8PathBuf>();
     let _ = clap_mangen::Man::new(Cli::command());
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use chrono::TimeZone;
+    use tempfile::TempDir;
+
+    fn minimal_queue(items: Vec<QueueItem>) -> Queue {
+        Queue {
+            schema_version: 1,
+            created_at: "2026-05-31T09:00:00-05:00".into(),
+            gmail_query: "in:inbox".into(),
+            ordering: "newest_to_oldest".into(),
+            current_pointer: 0,
+            items,
+        }
+    }
+
+    fn queue_item(status: &str) -> QueueItem {
+        QueueItem {
+            index: Some(0),
+            message_id: "mid-1".into(),
+            thread_id: "thread-1".into(),
+            internal_date: "2026-05-31T09:00:00-05:00".into(),
+            from: "Sender <sender@example.com>".into(),
+            subject: "Subject".into(),
+            snippet: String::new(),
+            status: status.into(),
+            approval_state: default_approval_state(),
+            research_state: default_research_state(),
+            read_state: default_read_state(),
+            dashboard_anchor: None,
+            recommended_action: None,
+            terminal_action: None,
+            updated_at: None,
+        }
+    }
+
+    fn session_dir(root: &Path, session_id: &str) -> PathBuf {
+        root.join(&session_id[6..10])
+            .join(&session_id[10..12])
+            .join(&session_id[12..14])
+            .join(session_id)
+    }
+
+    fn write_minimal_session(root: &Path, session_id: &str, queue: Queue) -> PathBuf {
+        let dir = session_dir(root, session_id);
+        std::fs::create_dir_all(&dir).unwrap();
+        write_text(&dir.join("manifest.json"), "{}\n").unwrap();
+        write_json(&dir.join("queue.json"), &queue).unwrap();
+        write_text(&dir.join("events.jsonl"), "").unwrap();
+        dir
+    }
+
+    #[test]
+    fn session_id_parser_accepts_exact_local_id_shape() {
+        assert_eq!(
+            parse_session_id_date("email-20260531-0914"),
+            Some(("2026".into(), "05".into(), "31".into()))
+        );
+        assert!(validate_session_id("email-20260531-0914").is_ok());
+    }
+
+    #[test]
+    fn session_id_parser_rejects_legacy_paths_and_bad_dates() {
+        for id in [
+            "session-20260531-091400",
+            "/tmp/email-20260531-0914",
+            "email-20260531-091400",
+            "email-20261331-0914",
+            "email-20260531-2460",
+        ] {
+            assert!(validate_session_id(id).is_err(), "{id}");
+        }
+    }
+
+    #[test]
+    fn resolve_session_maps_id_to_dated_root() {
+        let tmp = TempDir::new().unwrap();
+        let session_id = "email-20260531-0914";
+        let expected = write_minimal_session(tmp.path(), session_id, minimal_queue(vec![]));
+
+        assert_eq!(resolve_session(tmp.path(), session_id).unwrap(), expected);
+        assert!(resolve_session(tmp.path(), "email-20260531-0915").is_err());
+    }
+
+    #[test]
+    fn active_session_detection_uses_queue_and_completion_event() {
+        let tmp = TempDir::new().unwrap();
+        let active = write_minimal_session(
+            tmp.path(),
+            "email-20260531-0914",
+            minimal_queue(vec![queue_item("pending")]),
+        );
+        assert!(session_is_active(&active).unwrap());
+
+        write_text(
+            &active.join("events.jsonl"),
+            r#"{"event":"session_completed","ts":"2026-05-31T09:15:00-05:00","message_id":null,"data":{}}"#,
+        )
+        .unwrap();
+        assert!(!session_is_active(&active).unwrap());
+
+        let terminal = write_minimal_session(
+            tmp.path(),
+            "email-20260531-0916",
+            minimal_queue(vec![queue_item("archived")]),
+        );
+        assert!(!session_is_active(&terminal).unwrap());
+    }
+
+    #[test]
+    fn find_active_session_scans_current_local_day_only() {
+        let tmp = TempDir::new().unwrap();
+        let now = FixedOffset::west_opt(5 * 60 * 60)
+            .unwrap()
+            .with_ymd_and_hms(2026, 5, 31, 9, 30, 0)
+            .unwrap();
+        write_minimal_session(
+            tmp.path(),
+            "email-20260530-0914",
+            minimal_queue(vec![queue_item("pending")]),
+        );
+        write_minimal_session(
+            tmp.path(),
+            "email-20260531-0914",
+            minimal_queue(vec![queue_item("pending")]),
+        );
+
+        let active = find_active_session_for_date(tmp.path(), &now)
+            .unwrap()
+            .unwrap();
+        assert_eq!(active.session_id, "email-20260531-0914");
+    }
 }

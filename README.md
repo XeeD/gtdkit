@@ -16,18 +16,26 @@ around those external actions.
 
 ```sh
 gtdkit email session init
-gtdkit email session apply <session-dir> --batch-file batch.json
-gtdkit email queue build <session-dir> --items-file inbox-items.json --replace
-gtdkit email queue view <session-dir> --status pending --json
-gtdkit email queue update <session-dir> --update-file updates.json
-gtdkit email journal event <session-dir> gmail_marked_read --message-id mid-1 --increment marked_read
-gtdkit email journal batch <session-dir> --batch-file journal.json
+gtdkit email session apply email-YYYYMMDD-HHMM --batch-file batch.json
+gtdkit email queue build email-YYYYMMDD-HHMM --items-file inbox-items.json --replace
+gtdkit email queue view email-YYYYMMDD-HHMM --status pending --json
+gtdkit email queue update email-YYYYMMDD-HHMM --update-file updates.json
+gtdkit email journal event email-YYYYMMDD-HHMM gmail_marked_read --message-id mid-1 --increment marked_read
+gtdkit email journal batch email-YYYYMMDD-HHMM --batch-file journal.json
 gtdkit completions zsh > ~/.local/share/zsh/site-functions/_gtdkit
 ```
 
 ## Email Sessions
 
 Email sessions use a dated directory containing:
+
+```text
+/Users/xeed/Library/Mobile Documents/com~apple~CloudDocs/SOPs/email-inbox-processing/YYYY/MM/DD/email-YYYYMMDD-HHMM/
+```
+
+`session init` prints the session ID. Later session-scoped commands accept that
+ID and resolve it under the default root. Use `--root` to point at another SOP
+root when testing or deliberately working elsewhere.
 
 - `manifest.json` for session metadata and workflow contract paths.
 - `queue.json` for inbox message metadata and processing state.
@@ -45,6 +53,17 @@ leave partially written state.
 The project is a single binary crate for now. Keep domain logic in pure
 transforms where practical, and keep filesystem effects at the command/store
 edge.
+
+The code style favors practical functional Rust:
+
+- Model workflow state with typed data structures.
+- Keep validation, normalization, and queue/stat/event transforms pure where
+  practical.
+- Prefer immutable values and explicit return values in domain code.
+- Use mutation deliberately at the filesystem boundary, for builders, and where
+  Rust ownership makes it the clearest implementation.
+- Use focused dependencies for CLI polish, diagnostics, locking, paths,
+  serialization, and tests instead of hand-rolling infrastructure.
 
 ```sh
 cargo fmt --check
