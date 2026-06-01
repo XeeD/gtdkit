@@ -557,3 +557,224 @@ fn completions_zsh_emits_function() {
         .success()
         .stdout(predicate::str::contains("#compdef gtdkit"));
 }
+
+#[test]
+fn docs_cli_reference_matches_checked_in_file() {
+    let output = bin()
+        .args(["docs", "cli-reference", "--format", "markdown"])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+
+    assert_eq!(
+        String::from_utf8(output).unwrap(),
+        fs::read_to_string("docs/cli-reference.md").unwrap()
+    );
+}
+
+#[test]
+fn high_level_workflow_commands_update_session_without_batch_files() {
+    let tmp = TempDir::new().unwrap();
+    let session_id = "email-20260427-1000";
+    let session = write_session_for_id(tmp.path(), session_id, vec![queue_item("mid-1", 0)]);
+
+    bin()
+        .args([
+            "email",
+            "research",
+            "digest",
+            session_id,
+            "--root",
+            tmp.path().to_str().unwrap(),
+            "--message-id",
+            "mid-1",
+            "--queue-index",
+            "0",
+            "--agent-id",
+            "agent-1",
+            "--agent-name",
+            "researcher",
+            "--recommended-action",
+            "archive",
+            "--no-mutations-performed",
+            "--digest",
+            "No action needed.",
+        ])
+        .assert()
+        .success();
+    let item = &read_json(&session.join("queue.json"))["items"][0];
+    assert_eq!(item["research_state"], "buffered");
+    assert_eq!(item["recommended_action"], "archive");
+
+    bin()
+        .args([
+            "email",
+            "step",
+            "dashboard",
+            session_id,
+            "--root",
+            tmp.path().to_str().unwrap(),
+            "--message-id",
+            "mid-1",
+            "--dashboard-anchor",
+            "email-0001",
+            "--recommended-action",
+            "archive",
+            "--approval-options",
+            "archive,create-task",
+            "--read-state",
+            "read",
+            "--dashboard-stdin",
+            "--email-started",
+        ])
+        .write_stdin("**From:** Sender\n\nRecommended action: `archive`\n")
+        .assert()
+        .success();
+    let item = &read_json(&session.join("queue.json"))["items"][0];
+    assert_eq!(item["status"], "waiting_for_user");
+    assert_eq!(item["approval_state"], "requested");
+    assert_eq!(item["dashboard_anchor"], "email-0001");
+    assert!(
+        fs::read_to_string(session.join("dashboards.md"))
+            .unwrap()
+            .contains("Recommended action")
+    );
+
+    bin()
+        .args([
+            "email",
+            "action",
+            "approve",
+            session_id,
+            "--root",
+            tmp.path().to_str().unwrap(),
+            "--message-id",
+            "mid-1",
+            "--action",
+            "archive",
+            "--user-reply",
+            "archive",
+        ])
+        .assert()
+        .success();
+    assert_eq!(
+        read_json(&session.join("queue.json"))["items"][0]["approval_state"],
+        "approved"
+    );
+
+    bin()
+        .args([
+            "email",
+            "action",
+            "complete",
+            session_id,
+            "--root",
+            tmp.path().to_str().unwrap(),
+            "--message-id",
+            "mid-1",
+            "--terminal-action",
+            "archived",
+            "--gmail-action",
+            "archive",
+            "--stat",
+            "archived",
+            "--verification",
+            "in:inbox returned zero",
+        ])
+        .assert()
+        .success();
+    let item = &read_json(&session.join("queue.json"))["items"][0];
+    assert_eq!(item["status"], "archived");
+    assert_eq!(item["terminal_action"], "archived");
+    assert_eq!(read_json(&session.join("stats.json"))["archived"], 1);
+    assert!(
+        fs::read_to_string(session.join("events.jsonl"))
+            .unwrap()
+            .contains("action_completed")
+    );
+}
+
+#[test]
+fn high_level_workflow_validates_message_before_mutation() {
+    let tmp = TempDir::new().unwrap();
+    let session_id = "email-20260427-1000";
+    let session = write_session_for_id(tmp.path(), session_id, vec![queue_item("mid-1", 0)]);
+    let before_queue = fs::read_to_string(session.join("queue.json")).unwrap();
+    let before_events = fs::read_to_string(session.join("events.jsonl")).unwrap();
+
+    bin()
+        .args([
+            "email",
+            "action",
+            "complete",
+            session_id,
+            "--root",
+            tmp.path().to_str().unwrap(),
+            "--message-id",
+            "missing-mid",
+            "--terminal-action",
+            "archived",
+        ])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("Message ID not found"));
+
+    assert_eq!(
+        fs::read_to_string(session.join("queue.json")).unwrap(),
+        before_queue
+    );
+    assert_eq!(
+        fs::read_to_string(session.join("events.jsonl")).unwrap(),
+        before_events
+    );
+}
+
+#[test]
+fn fresh_check_records_count_and_validates_message_ids() {
+    let tmp = TempDir::new().unwrap();
+    let session_id = "email-20260427-1000";
+    let session = write_session_for_id(tmp.path(), session_id, vec![]);
+
+    bin()
+        .args([
+            "email",
+            "fresh-check",
+            session_id,
+            "--root",
+            tmp.path().to_str().unwrap(),
+            "--count",
+            "1",
+            "--message-id",
+            "mid-new",
+        ])
+        .assert()
+        .success();
+
+    assert_eq!(
+        read_json(&session.join("stats.json"))["fresh_mail_checks"],
+        1
+    );
+    assert!(
+        fs::read_to_string(session.join("events.jsonl"))
+            .unwrap()
+            .contains("fresh_mail_check")
+    );
+
+    bin()
+        .args([
+            "email",
+            "fresh-check",
+            session_id,
+            "--root",
+            tmp.path().to_str().unwrap(),
+            "--count",
+            "2",
+            "--message-id",
+            "mid-new",
+        ])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("--count must match"));
+}

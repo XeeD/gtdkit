@@ -4,8 +4,9 @@
 
 The current release focuses on email inbox-processing sessions: creating a
 restartable session directory, building and inspecting the message queue,
-recording journal events, applying durable session updates, and generating shell
-completions.
+recording journal events, applying durable session updates, recording ergonomic
+research/dashboard/action workflow steps, generating a checked-in CLI reference,
+and generating shell completions.
 
 The CLI is intentionally local-first. It manages structured files on disk and
 does not read Gmail, mutate remote services, or make task-management decisions
@@ -22,6 +23,12 @@ gtdkit email queue view email-YYYYMMDD-HHMM --status pending --json
 gtdkit email queue update email-YYYYMMDD-HHMM --update-file updates.json
 gtdkit email journal event email-YYYYMMDD-HHMM gmail_marked_read --message-id mid-1 --increment marked_read
 gtdkit email journal batch email-YYYYMMDD-HHMM --batch-file journal.json
+gtdkit email research digest email-YYYYMMDD-HHMM --message-id mid-1 --recommended-action archive --no-mutations-performed
+gtdkit email step dashboard email-YYYYMMDD-HHMM --message-id mid-1 --dashboard-anchor email-0001 --dashboard-stdin
+gtdkit email action approve email-YYYYMMDD-HHMM --message-id mid-1 --action archive --user-reply archive
+gtdkit email action complete email-YYYYMMDD-HHMM --message-id mid-1 --terminal-action archived --gmail-action archive --stat archived
+gtdkit email fresh-check email-YYYYMMDD-HHMM --count 0
+gtdkit docs cli-reference --format markdown > docs/cli-reference.md
 gtdkit completions zsh > ~/.local/share/zsh/site-functions/_gtdkit
 ```
 
@@ -48,11 +55,29 @@ Session operations acquire `.session.lock`. JSON writes are staged through a
 temporary file, flushed, and renamed into place so a failed command does not
 leave partially written state.
 
+## CLI Reference
+
+`docs/cli-reference.md` is generated from Clap metadata and checked in so agents
+can load the command reference without repeatedly invoking `gtdkit --help`.
+Regenerate it whenever CLI commands, flags, status values, file schemas,
+session/journal behavior, or workflow command semantics change:
+
+```sh
+cargo run -- docs cli-reference --format markdown > docs/cli-reference.md
+```
+
+Installed-command equivalent:
+
+```sh
+gtdkit docs cli-reference --format markdown > docs/cli-reference.md
+```
+
+Tests fail if the checked-in reference differs from generated output.
+
 ## Development
 
-The project is a single binary crate for now. Keep domain logic in pure
-transforms where practical, and keep filesystem effects at the command/store
-edge.
+The project is a binary plus library crate. Keep domain logic in pure transforms
+where practical, and keep filesystem effects at the command/store edge.
 
 The code style favors practical functional Rust:
 
@@ -64,6 +89,8 @@ The code style favors practical functional Rust:
   Rust ownership makes it the clearest implementation.
 - Use focused dependencies for CLI polish, diagnostics, locking, paths,
   serialization, and tests instead of hand-rolling infrastructure.
+- Document non-obvious invariants and mutation boundaries with useful Rustdoc or
+  comments as part of each change.
 
 ```sh
 cargo fmt --check

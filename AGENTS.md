@@ -24,23 +24,38 @@ domain transforms, and write session files safely.
   leave session state unchanged whenever feasible.
 - Keep filesystem effects isolated. Use session-level locks and atomic writes
   for durable state changes.
+- Document non-obvious behavior with useful Rustdoc or comments as part of the
+  implementation, not as an afterthought. Prioritize comments that explain
+  invariants, mutation boundaries, validation-before-write guarantees, external
+  workflow contracts, and why a command exists. Avoid comments that merely
+  restate the next line of code.
 - Tests should cover the behavior contract: queue validation, no partial
   mutation on failure, journal normalization, stats increments, and stable CLI
   output where useful.
+- `docs/cli-reference.md` is generated from Clap metadata. When changing CLI
+  commands, flags, status values, file schemas, session/journal behavior, or
+  workflow command semantics, regenerate it with:
+
+```sh
+cargo run -- docs cli-reference --format markdown > docs/cli-reference.md
+```
+
+- Include the regenerated CLI reference in the same change. Tests should fail if
+  it is stale.
 
 ## Commands
 
 Use the managed Rust toolchain:
 
 ```sh
-mise exec -- cargo fmt --check
-mise exec -- cargo clippy --all-targets --all-features -- -D warnings
-mise exec -- cargo test
+cargo fmt --check
+cargo clippy --all-targets --all-features -- -D warnings
+cargo test
 ```
 
 For local install checks:
 
 ```sh
-mise exec -- cargo install --path . --locked --force
+cargo install --path . --locked --force
 gtdkit --version
 ```
