@@ -56,6 +56,30 @@ fn queue_item(message_id: &str, index: usize) -> Value {
         "from": "Sender <sender@example.com>",
         "subject": format!("Subject {message_id}"),
         "snippet": "",
+        "metadata_state": "complete",
+        "labels": [],
+        "status": "pending",
+        "approval_state": "none",
+        "research_state": "not_started",
+        "read_state": "unknown",
+        "dashboard_anchor": null,
+        "recommended_action": null,
+        "terminal_action": null,
+        "updated_at": null
+    })
+}
+
+fn sparse_queue_item(message_id: &str, index: usize) -> Value {
+    json!({
+        "index": index,
+        "message_id": message_id,
+        "thread_id": null,
+        "internal_date": null,
+        "from": null,
+        "subject": null,
+        "snippet": null,
+        "metadata_state": "sparse",
+        "labels": [],
         "status": "pending",
         "approval_state": "none",
         "research_state": "not_started",
@@ -311,6 +335,62 @@ fn queue_build_appends_replaces_and_rejects_duplicates_without_mutation() {
     assert_eq!(queue["current_pointer"], 0);
     assert_eq!(queue["items"][0]["message_id"], "mid-9");
     assert_eq!(queue["items"][0]["index"], 0);
+}
+
+#[test]
+fn queue_build_accepts_sparse_metadata_and_preserves_input_order() {
+    let tmp = TempDir::new().unwrap();
+    let session_id = "email-20260427-1000";
+    let session = write_session_for_id(tmp.path(), session_id, vec![]);
+
+    let first = json!({"message_id": "mid-newest"});
+    let second = json!({"message_id": "mid-middle", "thread_id": "thread-middle"});
+    let third = json!({"message_id": "mid-oldest"});
+    bin()
+        .args([
+            "email",
+            "queue",
+            "build",
+            session_id,
+            "--root",
+            tmp.path().to_str().unwrap(),
+            "--item",
+            &first.to_string(),
+            "--item",
+            &second.to_string(),
+            "--item",
+            &third.to_string(),
+            "--replace",
+        ])
+        .assert()
+        .success();
+
+    let queue = read_json(&session.join("queue.json"));
+    assert_eq!(queue["items"][0]["message_id"], "mid-newest");
+    assert_eq!(queue["items"][1]["message_id"], "mid-middle");
+    assert_eq!(queue["items"][2]["message_id"], "mid-oldest");
+    assert_eq!(queue["items"][0]["metadata_state"], "sparse");
+    assert_eq!(queue["items"][1]["metadata_state"], "partial");
+    assert_eq!(queue["items"][0]["internal_date"], Value::Null);
+
+    let output = bin()
+        .args([
+            "email",
+            "queue",
+            "view",
+            session_id,
+            "--root",
+            tmp.path().to_str().unwrap(),
+            "--json",
+        ])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let payload: Value = serde_json::from_slice(&output).unwrap();
+    assert_eq!(payload["queue_length"], 3);
+    assert_eq!(payload["items"][1]["thread_id"], "thread-middle");
 }
 
 #[test]
@@ -694,6 +774,110 @@ fn high_level_workflow_commands_update_session_without_batch_files() {
             .unwrap()
             .contains("action_completed")
     );
+}
+
+#[test]
+fn research_digest_backfills_sparse_queue_metadata_in_same_command() {
+    let tmp = TempDir::new().unwrap();
+    let session_id = "email-20260427-1000";
+    let session = write_session_for_id(
+        tmp.path(),
+        session_id,
+        vec![{
+            let mut item = sparse_queue_item("mid-1", 0);
+            item["updated_at"] = json!("old-timestamp");
+            item
+        }],
+    );
+
+    bin()
+        .args([
+            "email",
+            "research",
+            "digest",
+            session_id,
+            "--root",
+            tmp.path().to_str().unwrap(),
+            "--message-id",
+            "mid-1",
+            "--agent-id",
+            "agent-1",
+            "--recommended-action",
+            "archive",
+            "--no-mutations-performed",
+            "--digest",
+            "Read-only digest.",
+            "--thread-id",
+            "thread-1",
+            "--internal-date",
+            "2026-04-27T09:00:00-05:00",
+            "--from",
+            "Sender <sender@example.com>",
+            "--subject",
+            "Sparse fixed",
+            "--snippet",
+            "Preview text",
+            "--label",
+            "INBOX",
+            "--label",
+            "UNREAD",
+        ])
+        .assert()
+        .success();
+
+    let queue = read_json(&session.join("queue.json"));
+    let item = &queue["items"][0];
+    assert_eq!(item["thread_id"], "thread-1");
+    assert_eq!(item["internal_date"], "2026-04-27T09:00:00-05:00");
+    assert_eq!(item["from"], "Sender <sender@example.com>");
+    assert_eq!(item["subject"], "Sparse fixed");
+    assert_eq!(item["snippet"], "Preview text");
+    assert_eq!(item["labels"], json!(["INBOX", "UNREAD"]));
+    assert_eq!(item["metadata_state"], "complete");
+    assert_ne!(item["updated_at"], "old-timestamp");
+
+    let events = fs::read_to_string(session.join("events.jsonl")).unwrap();
+    assert!(events.contains("subagent_digest_received"));
+    assert!(events.contains("queue_metadata_enriched"));
+}
+
+#[test]
+fn research_digest_ignores_empty_metadata_labels() {
+    let tmp = TempDir::new().unwrap();
+    let session_id = "email-20260427-1000";
+    let session = write_session_for_id(tmp.path(), session_id, vec![sparse_queue_item("mid-1", 0)]);
+
+    bin()
+        .args([
+            "email",
+            "research",
+            "digest",
+            session_id,
+            "--root",
+            tmp.path().to_str().unwrap(),
+            "--message-id",
+            "mid-1",
+            "--agent-id",
+            "agent-1",
+            "--no-mutations-performed",
+            "--digest",
+            "Read-only digest.",
+            "--label",
+            "",
+            "--label",
+            "   ",
+        ])
+        .assert()
+        .success();
+
+    let queue = read_json(&session.join("queue.json"));
+    let item = &queue["items"][0];
+    assert_eq!(item["labels"], json!([]));
+    assert_eq!(item["metadata_state"], "sparse");
+
+    let events = fs::read_to_string(session.join("events.jsonl")).unwrap();
+    assert!(events.contains("subagent_digest_received"));
+    assert!(!events.contains("queue_metadata_enriched"));
 }
 
 #[test]

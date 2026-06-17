@@ -1,4 +1,5 @@
 /target/
+.agent/qa/
 /.idea/
 /.vscode/
 *.swp

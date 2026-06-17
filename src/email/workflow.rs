@@ -14,7 +14,10 @@ use crate::{
 use super::{
     journal::{append_events, increment_stats},
     model::{EventInput, Queue, QueueUpdate},
-    queue::{apply_queue_updates, assert_queue_contains, clean_fields, validate_queue_updates},
+    queue::{
+        apply_queue_updates, assert_queue_contains, clean_fields, labels_value, option_value,
+        validate_queue_updates,
+    },
     session::{SessionLock, resolve_session},
 };
 
@@ -36,6 +39,17 @@ pub(crate) fn research_digest(args: ResearchDigestArgs) -> Result<()> {
             Value::String(args.recommended_action.clone()),
         );
     }
+    let metadata_fields = clean_fields(BTreeMap::from([
+        ("thread_id".into(), option_value(args.thread_id)),
+        ("internal_date".into(), option_value(args.internal_date)),
+        ("from".into(), option_value(args.from)),
+        ("subject".into(), option_value(args.subject)),
+        ("snippet".into(), option_value(args.snippet)),
+        ("labels".into(), labels_value(args.labels)),
+    ]));
+    for (key, value) in metadata_fields.clone() {
+        fields.insert(key, value);
+    }
 
     let data = json!({
         "agent_id": empty_as_null(&args.agent_id),
@@ -45,24 +59,37 @@ pub(crate) fn research_digest(args: ResearchDigestArgs) -> Result<()> {
         "no_mutations_performed": args.no_mutations_performed,
         "digest": args.digest,
     });
+    let mut events = vec![
+        EventInput {
+            event: "subagent_digest_received".into(),
+            message_id: Some(args.message_id.clone()),
+            data,
+            queue_update: BTreeMap::new(),
+            increments: vec![],
+        },
+        EventInput {
+            event: "research_buffered".into(),
+            message_id: Some(args.message_id.clone()),
+            data: json!({}),
+            queue_update: BTreeMap::new(),
+            increments: vec![],
+        },
+    ];
+    if !metadata_fields.is_empty() {
+        events.push(EventInput {
+            event: "queue_metadata_enriched".into(),
+            message_id: Some(args.message_id.clone()),
+            data: json!({
+                "fields": metadata_fields.keys().cloned().collect::<Vec<_>>(),
+            }),
+            queue_update: BTreeMap::new(),
+            increments: vec![],
+        });
+    }
+
     apply_locked_step(
         &session_dir,
-        vec![
-            EventInput {
-                event: "subagent_digest_received".into(),
-                message_id: Some(args.message_id.clone()),
-                data,
-                queue_update: BTreeMap::new(),
-                increments: vec![],
-            },
-            EventInput {
-                event: "research_buffered".into(),
-                message_id: Some(args.message_id.clone()),
-                data: json!({}),
-                queue_update: BTreeMap::new(),
-                increments: vec![],
-            },
-        ],
+        events,
         vec![QueueUpdate {
             message_id: args.message_id,
             fields,

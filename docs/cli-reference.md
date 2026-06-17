@@ -193,6 +193,12 @@ Record a read-only subagent digest
 | `--no-mutations-performed` | false | false | Assert the subagent performed no mutations |
 | `--state` | false | false | Queue research_state to store |
 | `--digest` | false | false | Digest text or compact JSON |
+| `--thread-id` | false | false | Backfill Gmail thread ID from the read-only research result |
+| `--internal-date` | false | false | Backfill message internal date from the read-only research result |
+| `--from` | false | false | Backfill message From header |
+| `--subject` | false | false | Backfill message subject |
+| `--snippet` | false | false | Backfill message snippet |
+| `--label` | false | true | Backfill Gmail label; repeatable |
 | `--timezone` | false | false | Local timezone label |
 
 #### `gtdkit email step`

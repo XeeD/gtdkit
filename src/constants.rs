@@ -4,6 +4,13 @@ pub const DEFAULT_GMAIL_QUERY: &str = "in:inbox";
 pub const DEFAULT_TZ: &str = "America/Chicago";
 
 pub const QUEUE_FIELDS: &[&str] = &[
+    "thread_id",
+    "internal_date",
+    "from",
+    "subject",
+    "snippet",
+    "metadata_state",
+    "labels",
     "status",
     "approval_state",
     "research_state",

@@ -33,12 +33,20 @@ pub(crate) struct QueueItem {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) index: Option<usize>,
     pub(crate) message_id: String,
-    pub(crate) thread_id: String,
-    pub(crate) internal_date: String,
-    pub(crate) from: String,
-    pub(crate) subject: String,
     #[serde(default)]
-    pub(crate) snippet: String,
+    pub(crate) thread_id: Option<String>,
+    #[serde(default)]
+    pub(crate) internal_date: Option<String>,
+    #[serde(default)]
+    pub(crate) from: Option<String>,
+    #[serde(default)]
+    pub(crate) subject: Option<String>,
+    #[serde(default)]
+    pub(crate) snippet: Option<String>,
+    #[serde(default = "default_metadata_state")]
+    pub(crate) metadata_state: String,
+    #[serde(default)]
+    pub(crate) labels: Vec<String>,
     #[serde(default = "default_status")]
     pub(crate) status: String,
     #[serde(default = "default_approval_state")]
@@ -117,6 +125,10 @@ pub(crate) struct JournalEvent<'a> {
 
 pub(crate) fn default_status() -> String {
     "pending".into()
+}
+
+pub(crate) fn default_metadata_state() -> String {
+    "sparse".into()
 }
 
 pub(crate) fn default_approval_state() -> String {

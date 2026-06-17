@@ -142,8 +142,8 @@ pub(crate) fn view(
                 .unwrap_or_default(),
             item.status.clone(),
             item.message_id.clone(),
-            item.from.clone(),
-            item.subject.clone(),
+            item.from.clone().unwrap_or_default(),
+            item.subject.clone().unwrap_or_default(),
         ]);
     }
     if !table.is_empty() {
@@ -216,21 +216,50 @@ pub(crate) fn apply_queue_updates(
 
 /// Apply a small set of string-like workflow fields to one queue item.
 pub(crate) fn apply_fields(item: &mut QueueItem, fields: BTreeMap<String, Value>) -> Result<()> {
+    let mut metadata_touched = false;
+    let mut metadata_state_explicit = false;
     for (key, value) in fields {
-        let text_value = match value {
-            Value::String(value) => value,
-            other => other.to_string(),
-        };
         match key.as_str() {
-            "status" => item.status = text_value,
-            "approval_state" => item.approval_state = text_value,
-            "research_state" => item.research_state = text_value,
-            "read_state" => item.read_state = text_value,
-            "recommended_action" => item.recommended_action = Some(text_value),
-            "terminal_action" => item.terminal_action = Some(text_value),
-            "dashboard_anchor" => item.dashboard_anchor = Some(text_value),
+            "thread_id" => {
+                item.thread_id = Some(text_field(value));
+                metadata_touched = true;
+            }
+            "internal_date" => {
+                item.internal_date = Some(text_field(value));
+                metadata_touched = true;
+            }
+            "from" => {
+                item.from = Some(text_field(value));
+                metadata_touched = true;
+            }
+            "subject" => {
+                item.subject = Some(text_field(value));
+                metadata_touched = true;
+            }
+            "snippet" => {
+                item.snippet = Some(text_field(value));
+                metadata_touched = true;
+            }
+            "metadata_state" => {
+                item.metadata_state = text_field(value);
+                metadata_state_explicit = true;
+            }
+            "labels" => {
+                item.labels = labels_field(value)?;
+                metadata_touched = true;
+            }
+            "status" => item.status = text_field(value),
+            "approval_state" => item.approval_state = text_field(value),
+            "research_state" => item.research_state = text_field(value),
+            "read_state" => item.read_state = text_field(value),
+            "recommended_action" => item.recommended_action = Some(text_field(value)),
+            "terminal_action" => item.terminal_action = Some(text_field(value)),
+            "dashboard_anchor" => item.dashboard_anchor = Some(text_field(value)),
             _ => bail!("unsupported queue fields: {key}"),
         }
+    }
+    if metadata_touched && !metadata_state_explicit {
+        item.metadata_state = metadata_state_for(item);
     }
     Ok(())
 }
@@ -270,6 +299,7 @@ pub(crate) fn clean_fields(fields: BTreeMap<String, Value>) -> BTreeMap<String, 
         .filter(|(_, value)| match value {
             Value::Null => false,
             Value::String(value) => !value.is_empty(),
+            Value::Array(value) => !value.is_empty(),
             _ => true,
         })
         .collect()
@@ -296,13 +326,7 @@ pub(crate) fn normalize_queue_items(values: Vec<Value>) -> Result<Vec<QueueItem>
         let object = value
             .as_object()
             .ok_or_else(|| miette!("queue item must be a JSON object"))?;
-        for required in [
-            "message_id",
-            "thread_id",
-            "internal_date",
-            "from",
-            "subject",
-        ] {
+        for required in ["message_id"] {
             if !object.contains_key(required) {
                 bail!("queue item missing required fields: {required}");
             }
@@ -315,6 +339,8 @@ pub(crate) fn normalize_queue_items(values: Vec<Value>) -> Result<Vec<QueueItem>
             "from",
             "subject",
             "snippet",
+            "metadata_state",
+            "labels",
             "status",
             "approval_state",
             "research_state",
@@ -337,9 +363,78 @@ pub(crate) fn normalize_queue_items(values: Vec<Value>) -> Result<Vec<QueueItem>
         let mut item: QueueItem = serde_json::from_value(value).into_diagnostic()?;
         item.index = None;
         item.updated_at = None;
+        item.metadata_state = metadata_state_for(&item);
         items.push(item);
     }
     Ok(items)
+}
+
+fn metadata_state_for(item: &QueueItem) -> String {
+    if item.thread_id.is_some()
+        && item.internal_date.is_some()
+        && item.from.is_some()
+        && item.subject.is_some()
+    {
+        "complete".into()
+    } else if item.thread_id.is_some() {
+        "partial".into()
+    } else {
+        "sparse".into()
+    }
+}
+
+pub(crate) fn option_value(value: Option<String>) -> Value {
+    value.map(Value::String).unwrap_or(Value::Null)
+}
+
+pub(crate) fn labels_value(labels: Vec<String>) -> Value {
+    let labels: Vec<_> = labels
+        .into_iter()
+        .map(|label| label.trim().to_owned())
+        .filter(|label| !label.is_empty())
+        .map(Value::String)
+        .collect();
+    if labels.is_empty() {
+        Value::Null
+    } else {
+        Value::Array(labels)
+    }
+}
+
+fn text_field(value: Value) -> String {
+    match value {
+        Value::String(value) => value,
+        other => other.to_string(),
+    }
+}
+
+fn labels_field(value: Value) -> Result<Vec<String>> {
+    match value {
+        Value::Array(values) => {
+            let mut labels = vec![];
+            for value in values {
+                match value {
+                    Value::String(value) => {
+                        let value = value.trim().to_owned();
+                        if !value.is_empty() {
+                            labels.push(value);
+                        }
+                    }
+                    other => bail!("labels must be strings, got {other}"),
+                }
+            }
+            Ok(labels)
+        }
+        Value::String(value) => {
+            let value = value.trim().to_owned();
+            if value.is_empty() {
+                Ok(vec![])
+            } else {
+                Ok(vec![value])
+            }
+        }
+        other => bail!("labels must be a string or array of strings, got {other}"),
+    }
 }
 
 #[cfg(test)]

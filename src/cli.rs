@@ -309,6 +309,28 @@ pub struct ResearchDigestArgs {
         help = "Digest text or compact JSON"
     )]
     pub digest: String,
+    #[arg(
+        long,
+        help = "Backfill Gmail thread ID from the read-only research result"
+    )]
+    pub thread_id: Option<String>,
+    #[arg(
+        long,
+        help = "Backfill message internal date from the read-only research result"
+    )]
+    pub internal_date: Option<String>,
+    #[arg(
+        long,
+        allow_hyphen_values = true,
+        help = "Backfill message From header"
+    )]
+    pub from: Option<String>,
+    #[arg(long, allow_hyphen_values = true, help = "Backfill message subject")]
+    pub subject: Option<String>,
+    #[arg(long, allow_hyphen_values = true, help = "Backfill message snippet")]
+    pub snippet: Option<String>,
+    #[arg(long = "label", help = "Backfill Gmail label; repeatable")]
+    pub labels: Vec<String>,
     #[arg(long, default_value = DEFAULT_TZ, help = "Local timezone label")]
     pub timezone: String,
 }
